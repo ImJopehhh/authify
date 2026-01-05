@@ -19,6 +19,7 @@ import org.mapplestudio.authify.utils.EncryptionUtil;
 import javax.crypto.SecretKey;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -49,7 +50,7 @@ public class LoginProtocolListener extends PacketAdapter {
         if (event.getPacketType() == PacketType.Login.Client.START) {
             PacketContainer packet = event.getPacket();
             
-            // FIX: In 1.20.2+, LoginStart uses Strings and UUIDs directly, not GameProfile
+            // FIX: In 1.20.2+, LoginStart uses Strings and UUIDs directly
             String username = packet.getStrings().read(0);
             UUID uuid = packet.getUUIDs().read(0);
             
@@ -70,37 +71,21 @@ public class LoginProtocolListener extends PacketAdapter {
             // 2. Async Lookup
             databaseManager.isPremium(username).thenAccept(isPremium -> {
                 plugin.debug("Database lookup for " + username + ": Premium=" + isPremium);
-                if (isPremium) {
-                    // 3a. Premium: Initiate Encryption Flow
-                    try {
-                        KeyPair keyPair = EncryptionUtil.getKeyPair();
-                        byte[] verifyToken = EncryptionUtil.generateVerifyToken();
-                        verifyTokens.put(username, verifyToken);
-
-                        PacketContainer encryptionRequest = ProtocolLibrary.getProtocolManager()
-                                .createPacket(PacketType.Login.Server.ENCRYPTION_BEGIN);
-                        encryptionRequest.getStrings().write(0, ""); // Server ID
-                        // FIX: Use getByteArrays() for Public Key in 1.21+
-                        encryptionRequest.getByteArrays().write(0, keyPair.getPublic().getEncoded());
-                        encryptionRequest.getByteArrays().write(1, verifyToken);
-
-                        ProtocolLibrary.getProtocolManager().sendServerPacket(event.getPlayer(), encryptionRequest);
-                        plugin.debug("Sent Encryption Request to " + username);
-                    } catch (Exception e) {
-                        plugin.getLogger().severe("Encryption init failed for " + username);
-                        event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
-                        pendingLoginPackets.remove(username);
-                    }
+                
+                if (isPremium == null) {
+                    // User not in DB -> Check Mojang API
+                    checkMojangApi(username).thenAccept(hasMojangProfile -> {
+                        plugin.debug("Mojang API check for " + username + ": " + hasMojangProfile);
+                        if (hasMojangProfile) {
+                            initiateEncryption(event.getPlayer(), username);
+                        } else {
+                            releasePacket(event.getPlayer(), username, packet);
+                        }
+                    });
+                } else if (isPremium) {
+                    initiateEncryption(event.getPlayer(), username);
                 } else {
-                    // 3b. Cracked: Re-inject packet to let server handle it
-                    processingPlayers.add(username);
-                    pendingLoginPackets.remove(username);
-                    try {
-                        plugin.debug("Re-injecting LoginStart for cracked user " + username);
-                        ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), packet);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
+                    releasePacket(event.getPlayer(), username, packet);
                 }
             });
 
@@ -138,18 +123,12 @@ public class LoginProtocolListener extends PacketAdapter {
                         PacketContainer originalLoginPacket = pendingLoginPackets.remove(username);
                         if (originalLoginPacket != null) {
                             // Update the profile in the original packet
-                            // In 1.20.2+, we update the UUID field directly
                             originalLoginPacket.getUUIDs().write(0, profile.getUUID());
                             
                             // Mark as processed so we don't intercept it again
                             processingPlayers.add(username);
                             
                             try {
-                                // Note: In a full implementation, you must also enable encryption on the Netty channel here.
-                                // ProtocolLib doesn't expose channel encryption easily without NMS or reflection.
-                                // For this scope, we assume the server is in offline mode so it won't enforce encryption,
-                                // but we have validated the user is premium.
-                                
                                 plugin.debug("Re-injecting LoginStart for premium user " + username + " with UUID " + profile.getUUID());
                                 ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), originalLoginPacket);
                                 
@@ -173,6 +152,56 @@ public class LoginProtocolListener extends PacketAdapter {
                 event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-encryption-error", "Encryption Error"));
             }
         }
+    }
+
+    private void initiateEncryption(org.bukkit.entity.Player player, String username) {
+        try {
+            KeyPair keyPair = EncryptionUtil.getKeyPair();
+            byte[] verifyToken = EncryptionUtil.generateVerifyToken();
+            verifyTokens.put(username, verifyToken);
+
+            PacketContainer encryptionRequest = ProtocolLibrary.getProtocolManager()
+                    .createPacket(PacketType.Login.Server.ENCRYPTION_BEGIN);
+            encryptionRequest.getStrings().write(0, ""); // Server ID
+            encryptionRequest.getByteArrays().write(0, keyPair.getPublic().getEncoded());
+            encryptionRequest.getByteArrays().write(1, verifyToken);
+
+            ProtocolLibrary.getProtocolManager().sendServerPacket(player, encryptionRequest);
+            plugin.debug("Sent Encryption Request to " + username);
+        } catch (Exception e) {
+            plugin.getLogger().severe("Encryption init failed for " + username);
+            player.kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
+            pendingLoginPackets.remove(username);
+        }
+    }
+
+    private void releasePacket(org.bukkit.entity.Player player, String username, PacketContainer packet) {
+        processingPlayers.add(username);
+        pendingLoginPackets.remove(username);
+        try {
+            plugin.debug("Re-injecting LoginStart for cracked user " + username);
+            ProtocolLibrary.getProtocolManager().receiveClientPacket(player, packet);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private java.util.concurrent.CompletableFuture<Boolean> checkMojangApi(String username) {
+        return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            try {
+                URL url = new URL("https://api.mojang.com/users/profiles/minecraft/" + username);
+                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("GET");
+                connection.setConnectTimeout(5000);
+                connection.setReadTimeout(5000);
+                
+                int responseCode = connection.getResponseCode();
+                return responseCode == 200;
+            } catch (Exception e) {
+                plugin.getLogger().warning("Failed to check Mojang API for " + username + ": " + e.getMessage());
+                return false; // Fail-safe to cracked
+            }
+        });
     }
 
     private java.util.concurrent.CompletableFuture<WrappedGameProfile> authenticateMojang(String username, String serverId, String ip) {

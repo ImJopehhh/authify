@@ -1,8 +1,5 @@
 package org.mapplestudio.authify.listeners;
 
-import com.comphenix.protocol.PacketType;
-import com.comphenix.protocol.events.PacketAdapter;
-import com.comphenix.protocol.events.PacketEvent;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -16,35 +13,28 @@ import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.mapplestudio.authify.Authify;
 import org.mapplestudio.authify.managers.AuthManager;
 
-public class PlayerSecurityListener extends PacketAdapter implements Listener {
+public class PlayerSecurityListener implements Listener {
     private final Authify plugin;
     private final AuthManager authManager;
 
     public PlayerSecurityListener(Authify plugin, AuthManager authManager) {
-        // Intercept OUTGOING world packets
-        super(plugin, PacketType.Play.Server.MAP_CHUNK, PacketType.Play.Server.LIGHT_UPDATE);
         this.plugin = plugin;
         this.authManager = authManager;
-    }
-
-    @Override
-    public void onPacketSending(PacketEvent event) {
-        Player player = event.getPlayer();
-        // If not authenticated, DO NOT send chunks. World will be empty/void for them.
-        if (!authManager.isAuthenticated(player.getUniqueId())) {
-            event.setCancelled(true);
-        }
     }
 
     @EventHandler
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         if (!authManager.isAuthenticated(player.getUniqueId())) {
-            // FIX: Teleport to spawn to prevent floating in void/falling
-            // We use a slight delay to ensure the player is fully initialized
+            // Apply Blindness indefinitely (until login)
+            player.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, Integer.MAX_VALUE, 1, false, false));
+            
+            // Teleport to spawn to prevent floating in void/falling
             plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
                 if (player.isOnline() && !authManager.isAuthenticated(player.getUniqueId())) {
                     player.teleport(player.getWorld().getSpawnLocation());
@@ -61,6 +51,11 @@ public class PlayerSecurityListener extends PacketAdapter implements Listener {
                 event.getFrom().getY() != event.getTo().getY() ||
                 event.getFrom().getZ() != event.getTo().getZ()) {
                 event.setCancelled(true);
+            }
+        } else {
+            // Remove blindness if they are authenticated (just in case it wasn't removed by command)
+            if (event.getPlayer().hasPotionEffect(PotionEffectType.BLINDNESS)) {
+                event.getPlayer().removePotionEffect(PotionEffectType.BLINDNESS);
             }
         }
     }

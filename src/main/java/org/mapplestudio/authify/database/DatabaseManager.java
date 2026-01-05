@@ -69,6 +69,10 @@ public class DatabaseManager {
         }
     }
 
+    /**
+     * Checks if a user is premium.
+     * @return true if premium, false if cracked, null if user not found.
+     */
     public CompletableFuture<Boolean> isPremium(String username) {
         return CompletableFuture.supplyAsync(() -> {
             try (Connection conn = dataSource.getConnection();
@@ -82,7 +86,7 @@ public class DatabaseManager {
             } catch (SQLException e) {
                 e.printStackTrace();
             }
-            return false; // Default to cracked if not found
+            return null; // User not found
         });
     }
 
