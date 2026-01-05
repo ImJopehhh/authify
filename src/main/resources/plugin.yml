@@ -1,0 +1,6 @@
+name: Authify
+version: '1.0.0'
+main: org.mapplestudio.authify.Authify
+api-version: '1.21'
+load: STARTUP
+authors: [ ImJopeh ]
