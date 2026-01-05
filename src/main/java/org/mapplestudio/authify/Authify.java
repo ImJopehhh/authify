@@ -4,6 +4,8 @@ import com.comphenix.protocol.ProtocolLibrary;
 import com.comphenix.protocol.ProtocolManager;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.mapplestudio.authify.commands.LoginCommand;
+import org.mapplestudio.authify.commands.RegisterCommand;
 import org.mapplestudio.authify.database.DatabaseManager;
 import org.mapplestudio.authify.listeners.LoginProtocolListener;
 import org.mapplestudio.authify.listeners.PlayerSecurityListener;
@@ -29,6 +31,10 @@ public final class Authify extends JavaPlugin {
         PlayerSecurityListener securityListener = new PlayerSecurityListener(this, authManager);
         protocolManager.addPacketListener(securityListener);
         Bukkit.getPluginManager().registerEvents(securityListener, this);
+
+        // Register Commands
+        getCommand("register").setExecutor(new RegisterCommand(databaseManager, authManager));
+        getCommand("login").setExecutor(new LoginCommand(databaseManager, authManager));
 
         getLogger().info("Authify has been enabled!");
     }

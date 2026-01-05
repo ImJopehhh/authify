@@ -6,6 +6,9 @@ import com.comphenix.protocol.events.PacketAdapter;
 import com.comphenix.protocol.events.PacketContainer;
 import com.comphenix.protocol.events.PacketEvent;
 import com.comphenix.protocol.wrappers.WrappedGameProfile;
+import com.comphenix.protocol.wrappers.WrappedSignedProperty;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.mapplestudio.authify.Authify;
 import org.mapplestudio.authify.database.DatabaseManager;
 import org.mapplestudio.authify.managers.AuthManager;
@@ -13,20 +16,16 @@ import org.mapplestudio.authify.managers.AuthSession;
 import org.mapplestudio.authify.utils.EncryptionUtil;
 
 import javax.crypto.SecretKey;
-import java.math.BigInteger;
-import java.net.InetSocketAddress;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.Map;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import java.util.Set;
 
 public class LoginProtocolListener extends PacketAdapter {
     private final Authify plugin;
@@ -34,6 +33,8 @@ public class LoginProtocolListener extends PacketAdapter {
     private final AuthManager authManager;
     private final Map<String, byte[]> verifyTokens = new ConcurrentHashMap<>();
     private final Set<String> processingPlayers = ConcurrentHashMap.newKeySet();
+    // Store original login packet to re-inject later
+    private final Map<String, PacketContainer> pendingLoginPackets = new ConcurrentHashMap<>();
 
     public LoginProtocolListener(Authify plugin, DatabaseManager databaseManager, AuthManager authManager) {
         super(plugin, PacketType.Login.Client.START, PacketType.Login.Client.ENCRYPTION_BEGIN);
@@ -49,16 +50,20 @@ public class LoginProtocolListener extends PacketAdapter {
             WrappedGameProfile profile = packet.getGameProfiles().read(0);
             String username = profile.getName();
 
+            // Anti-Loop: If we already marked this player as processed, let the packet pass
             if (processingPlayers.contains(username)) {
                 processingPlayers.remove(username);
-                return; // Allow the packet to pass through (Cracked path re-injection)
+                return; 
             }
 
-            event.setCancelled(true); // Hold the packet
+            // 1. HOLD the packet (Stop server from assigning Offline UUID)
+            event.setCancelled(true);
+            pendingLoginPackets.put(username, packet);
 
-            // Async Lookup
+            // 2. Async Lookup
             databaseManager.isPremium(username).thenAccept(isPremium -> {
                 if (isPremium) {
+                    // 3a. Premium: Initiate Encryption Flow
                     try {
                         KeyPair keyPair = EncryptionUtil.getKeyPair();
                         byte[] verifyToken = EncryptionUtil.generateVerifyToken();
@@ -72,12 +77,14 @@ public class LoginProtocolListener extends PacketAdapter {
 
                         ProtocolLibrary.getProtocolManager().sendServerPacket(event.getPlayer(), encryptionRequest);
                     } catch (Exception e) {
-                        plugin.getLogger().severe("Error initiating encryption for " + username + ": " + e.getMessage());
-                        event.getPlayer().kickPlayer("Authentication Error");
+                        plugin.getLogger().severe("Encryption init failed for " + username);
+                        event.getPlayer().kickPlayer("Login Error");
+                        pendingLoginPackets.remove(username);
                     }
                 } else {
-                    // Cracked: Release the packet
+                    // 3b. Cracked: Re-inject packet to let server handle it
                     processingPlayers.add(username);
+                    pendingLoginPackets.remove(username);
                     try {
                         ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), packet);
                     } catch (Exception e) {
@@ -87,15 +94,13 @@ public class LoginProtocolListener extends PacketAdapter {
             });
 
         } else if (event.getPacketType() == PacketType.Login.Client.ENCRYPTION_BEGIN) {
-            event.setCancelled(true); // Handle manually
-            
-            // Note: In 1.20.2+, the networking state changes are stricter.
-            // We must ensure we are in the LOGIN state.
+            // 4. Handle Encryption Response (Premium Only)
+            event.setCancelled(true); // We handle this manually
             
             PacketContainer packet = event.getPacket();
             byte[] sharedSecret = packet.getByteArrays().read(0);
             byte[] clientVerifyToken = packet.getByteArrays().read(1);
-            String username = event.getPlayer().getName(); // Temp player name
+            String username = event.getPlayer().getName();
             
             try {
                 KeyPair keyPair = EncryptionUtil.getKeyPair();
@@ -103,45 +108,49 @@ public class LoginProtocolListener extends PacketAdapter {
                 
                 if (!java.util.Arrays.equals(verifyTokens.get(username), 
                         EncryptionUtil.decryptData(keyPair.getPrivate(), clientVerifyToken))) {
-                    event.getPlayer().kickPlayer("Invalid verify token");
+                    event.getPlayer().kickPlayer("Invalid Token");
                     return;
                 }
 
                 String serverId = EncryptionUtil.generateServerId("", keyPair.getPublic(), secretKey);
                 String ip = event.getPlayer().getAddress().getAddress().getHostAddress();
                 
-                // Authenticate with Mojang
+                // 5. Authenticate with Mojang
                 authenticateMojang(username, serverId, ip).thenAccept(profile -> {
                     if (profile != null) {
-                        // Success!
-                        // 1. Enable encryption on the channel (ProtocolLib/Netty magic required here usually, 
-                        // but for this scope we focus on the logic flow).
-                        // In a full plugin, you'd access the Channel via ProtocolLib and add the Cipher.
-                        
-                        // 2. Send Login Success
-                        PacketContainer success = ProtocolLibrary.getProtocolManager()
-                                .createPacket(PacketType.Login.Server.SUCCESS);
-                        success.getGameProfiles().write(0, profile);
-                        
-                        try {
-                            ProtocolLibrary.getProtocolManager().sendServerPacket(event.getPlayer(), success);
+                        // 6. Success: Re-inject Login Start with REAL UUID
+                        PacketContainer originalLoginPacket = pendingLoginPackets.remove(username);
+                        if (originalLoginPacket != null) {
+                            // Update the profile in the original packet
+                            originalLoginPacket.getGameProfiles().write(0, profile);
                             
-                            // Register session
-                            AuthSession session = authManager.createSession(profile.getUUID());
-                            session.setLoggedIn(true);
-                            session.setPremium(true);
+                            // Mark as processed so we don't intercept it again
+                            processingPlayers.add(username);
                             
-                        } catch (Exception e) {
-                            e.printStackTrace();
+                            try {
+                                // Note: In a full implementation, you must also enable encryption on the Netty channel here.
+                                // ProtocolLib doesn't expose channel encryption easily without NMS or reflection.
+                                // For this scope, we assume the server is in offline mode so it won't enforce encryption,
+                                // but we have validated the user is premium.
+                                
+                                ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), originalLoginPacket);
+                                
+                                AuthSession session = authManager.createSession(profile.getUUID());
+                                session.setLoggedIn(true);
+                                session.setPremium(true);
+                            } catch (Exception e) {
+                                e.printStackTrace();
+                            }
+                        } else {
+                             event.getPlayer().kickPlayer("Session Expired");
                         }
                     } else {
-                        event.getPlayer().kickPlayer("Failed to authenticate with Mojang");
+                        event.getPlayer().kickPlayer("Authentication Failed");
                     }
                 });
                 
             } catch (Exception e) {
-                plugin.getLogger().severe("Encryption error: " + e.getMessage());
-                event.getPlayer().kickPlayer("Authentication Error");
+                event.getPlayer().kickPlayer("Encryption Error");
             }
         }
     }
@@ -164,17 +173,15 @@ public class LoginProtocolListener extends PacketAdapter {
                 
                 WrappedGameProfile profile = new WrappedGameProfile(uuid, name);
                 
-                // Add properties (Skin)
                 if (json.has("properties")) {
                     json.getAsJsonArray("properties").forEach(element -> {
                         JsonObject prop = element.getAsJsonObject();
                         String pName = prop.get("name").getAsString();
                         String pValue = prop.get("value").getAsString();
                         String pSignature = prop.has("signature") ? prop.get("signature").getAsString() : null;
-                        profile.getProperties().put(pName, new com.comphenix.protocol.wrappers.WrappedSignedProperty(pName, pValue, pSignature));
+                        profile.getProperties().put(pName, new WrappedSignedProperty(pName, pValue, pSignature));
                     });
                 }
-                
                 return profile;
             } catch (Exception e) {
                 return null;

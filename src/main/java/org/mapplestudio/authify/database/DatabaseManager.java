@@ -74,6 +74,43 @@ public class DatabaseManager {
         });
     }
 
+    public CompletableFuture<Void> registerUser(UUID uuid, String username, String hashedPassword, String ip) {
+        return CompletableFuture.runAsync(() -> {
+            try (Connection conn = dataSource.getConnection();
+                 PreparedStatement ps = conn.prepareStatement(
+                         "INSERT INTO authify_users (uuid, username, password, premium, ip) VALUES (?, ?, ?, ?, ?) " +
+                         "ON CONFLICT(uuid) DO UPDATE SET password = ?, ip = ?")) {
+                ps.setString(1, uuid.toString());
+                ps.setString(2, username);
+                ps.setString(3, hashedPassword);
+                ps.setBoolean(4, false); // Default to cracked for manual registration
+                ps.setString(5, ip);
+                ps.setString(6, hashedPassword);
+                ps.setString(7, ip);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
+    public CompletableFuture<String> getPasswordHash(String username) {
+        return CompletableFuture.supplyAsync(() -> {
+            try (Connection conn = dataSource.getConnection();
+                 PreparedStatement ps = conn.prepareStatement("SELECT password FROM authify_users WHERE username = ?")) {
+                ps.setString(1, username);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return rs.getString("password");
+                    }
+                }
+            } catch (SQLException e) {
+                e.printStackTrace();
+            }
+            return null;
+        });
+    }
+
     public void close() {
         if (dataSource != null) {
             dataSource.close();
