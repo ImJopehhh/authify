@@ -52,118 +52,101 @@ public class LoginProtocolListener extends PacketAdapter {
     public void onPacketReceiving(PacketEvent event) {
         if (event.getPacketType() == PacketType.Login.Client.START) {
             PacketContainer packet = event.getPacket();
-
-            // 1.20.2+ uses Strings/UUIDs directly, handle carefully
-            String username;
-            try {
-                username = packet.getStrings().read(0);
-            } catch (Exception e) {
-                // Fallback for older versions if needed, but 1.21 uses Strings
-                username = packet.getGameProfiles().read(0).getName();
-            }
-
+            
+            // FIX: In 1.20.2+, LoginStart uses Strings and UUIDs directly
+            String username = packet.getStrings().read(0);
+            UUID uuid = packet.getUUIDs().read(0);
             InetSocketAddress address = event.getPlayer().getAddress();
-
-            plugin.debug("Received LoginStart for: " + username + " from " + address);
+            
+            plugin.debug("Received LoginStart for: " + username + " (" + uuid + ") from " + address);
 
             // Anti-Loop: If we already marked this player as processed, let the packet pass
             if (processingPlayers.contains(username)) {
                 plugin.debug("Player " + username + " is already processed. Allowing packet.");
                 processingPlayers.remove(username);
-                pendingConnections.remove(address);
-                return;
+                pendingConnections.remove(address); // Cleanup
+                return; 
             }
 
-            // 1. HOLD the packet
+            // 1. HOLD the packet (Stop server from assigning Offline UUID)
             event.setCancelled(true);
             pendingLoginPackets.put(username, packet);
-            pendingConnections.put(address, username);
+            pendingConnections.put(address, username); // Map IP to Username
             plugin.debug("Held LoginStart packet for " + username);
 
             // 2. Async Lookup
-            String finalUsername = username;
             databaseManager.isPremium(username).thenAccept(isPremium -> {
-                plugin.debug("Database lookup for " + finalUsername + ": Premium=" + isPremium);
-
+                plugin.debug("Database lookup for " + username + ": Premium=" + isPremium);
+                
                 if (isPremium == null) {
                     // User not in DB -> Check Mojang API
-                    checkMojangApi(finalUsername).thenAccept(hasMojangProfile -> {
-                        plugin.debug("Mojang API check for " + finalUsername + ": " + hasMojangProfile);
+                    checkMojangApi(username).thenAccept(hasMojangProfile -> {
+                        plugin.debug("Mojang API check for " + username + ": " + hasMojangProfile);
                         if (hasMojangProfile) {
-                            initiateEncryption(event.getPlayer(), finalUsername);
+                            initiateEncryption(event.getPlayer(), username);
                         } else {
-                            releasePacket(event.getPlayer(), finalUsername, packet);
+                            releasePacket(event.getPlayer(), username, packet);
                         }
                     });
                 } else if (isPremium) {
-                    initiateEncryption(event.getPlayer(), finalUsername);
+                    initiateEncryption(event.getPlayer(), username);
                 } else {
-                    releasePacket(event.getPlayer(), finalUsername, packet);
+                    releasePacket(event.getPlayer(), username, packet);
                 }
             });
 
         } else if (event.getPacketType() == PacketType.Login.Client.ENCRYPTION_BEGIN) {
-            event.setCancelled(true); // Handle manually
-
+            // 4. Handle Encryption Response (Premium Only)
+            event.setCancelled(true); // We handle this manually
+            
             InetSocketAddress address = event.getPlayer().getAddress();
             String username = pendingConnections.get(address);
 
             if (username == null) {
                 plugin.debug("Received Encryption Response from unknown connection: " + address);
-                // Attempt to fallback to player name if connection map failed (unlikely)
-                username = event.getPlayer().getName();
-                if (username == null || username.equals("UNKNOWN")) {
-                    event.getPlayer().kickPlayer("Authentication Failed (Session Error)");
-                    return;
-                }
+                event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
+                return;
             }
 
             PacketContainer packet = event.getPacket();
             byte[] sharedSecret = packet.getByteArrays().read(0);
             byte[] clientVerifyToken = packet.getByteArrays().read(1);
-
+            
             plugin.debug("Received Encryption Response from " + username);
-
+            
             try {
                 KeyPair keyPair = EncryptionUtil.getKeyPair();
                 SecretKey secretKey = EncryptionUtil.decryptSharedKey(keyPair.getPrivate(), sharedSecret);
-
-                if (!java.util.Arrays.equals(verifyTokens.get(username),
+                
+                if (!java.util.Arrays.equals(verifyTokens.get(username), 
                         EncryptionUtil.decryptData(keyPair.getPrivate(), clientVerifyToken))) {
                     plugin.debug("Verify token mismatch for " + username);
-                    event.getPlayer().kickPlayer("Authentication Failed (Invalid Token)");
+                    event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     cleanup(username, address);
                     return;
                 }
 
                 String serverId = EncryptionUtil.generateServerId("", keyPair.getPublic(), secretKey);
-                String ip = address.getAddress().getHostAddress();
-
+                
                 // 5. Authenticate with Mojang
                 plugin.debug("Authenticating " + username + " with Mojang...");
-                String finalUsername = username;
+                // FIX: Removed IP parameter from authenticateMojang call
                 authenticateMojang(username, serverId).thenAccept(profile -> {
                     if (profile != null) {
-                        plugin.debug("Mojang Auth Success for " + finalUsername + ". UUID: " + profile.getUUID());
-
-                        // 6. Success: Re-inject Login Start
-                        PacketContainer originalLoginPacket = pendingLoginPackets.remove(finalUsername);
+                        plugin.debug("Mojang Auth Success for " + username + ". UUID: " + profile.getUUID());
+                        // 6. Success: Re-inject Login Start with REAL UUID
+                        PacketContainer originalLoginPacket = pendingLoginPackets.remove(username);
                         if (originalLoginPacket != null) {
-                            // 1.20.2+ / 1.21 Fix: Update UUID directly, NOT GameProfile
+                            // Update the profile in the original packet
+                            originalLoginPacket.getUUIDs().write(0, profile.getUUID());
+                            
+                            // Mark as processed so we don't intercept it again
+                            processingPlayers.add(username);
+                            
                             try {
-                                originalLoginPacket.getUUIDs().write(0, profile.getUUID());
-                            } catch (Exception e) {
-                                // Fallback for some ProtocolLib versions
-                                originalLoginPacket.getGameProfiles().write(0, profile);
-                            }
-
-                            // Mark as processed
-                            processingPlayers.add(finalUsername);
-
-                            try {
-                                plugin.debug("Re-injecting LoginStart for premium user " + finalUsername);
+                                plugin.debug("Re-injecting LoginStart for premium user " + username + " with UUID " + profile.getUUID());
                                 ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), originalLoginPacket);
-
+                                
                                 AuthSession session = authManager.createSession(profile.getUUID());
                                 session.setLoggedIn(true);
                                 session.setPremium(true);
@@ -171,27 +154,31 @@ public class LoginProtocolListener extends PacketAdapter {
                                 e.printStackTrace();
                             }
                         } else {
-                            event.getPlayer().kickPlayer("Session Expired");
+                             event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-session-expired", "Session Expired"));
                         }
                     } else {
-                        plugin.debug("Mojang Auth Failed for " + finalUsername + " (Profile is null)");
-                        event.getPlayer().kickPlayer("Authentication Failed. Please try again.");
+                        plugin.debug("Mojang Auth Failed for " + username);
+                        event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     }
-                    cleanup(finalUsername, address);
+                    cleanup(username, address);
                 });
-
+                
             } catch (Exception e) {
                 plugin.getLogger().severe("Encryption Error: " + e.getMessage());
-                e.printStackTrace();
-                event.getPlayer().kickPlayer("Encryption Error");
+                event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-encryption-error", "Encryption Error"));
                 cleanup(username, address);
             }
         }
     }
 
     private void cleanup(String username, InetSocketAddress address) {
-        if (username != null) verifyTokens.remove(username);
-        if (address != null) pendingConnections.remove(address);
+        if (username != null) {
+            verifyTokens.remove(username);
+            // pendingLoginPackets.remove(username); // Handled in logic
+        }
+        if (address != null) {
+            pendingConnections.remove(address);
+        }
     }
 
     private void initiateEncryption(org.bukkit.entity.Player player, String username) {
@@ -210,7 +197,7 @@ public class LoginProtocolListener extends PacketAdapter {
             plugin.debug("Sent Encryption Request to " + username);
         } catch (Exception e) {
             plugin.getLogger().severe("Encryption init failed for " + username);
-            player.kickPlayer("Authentication Failed");
+            player.kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
             pendingLoginPackets.remove(username);
             pendingConnections.remove(player.getAddress());
         }
@@ -219,6 +206,9 @@ public class LoginProtocolListener extends PacketAdapter {
     private void releasePacket(org.bukkit.entity.Player player, String username, PacketContainer packet) {
         processingPlayers.add(username);
         pendingLoginPackets.remove(username);
+        // pendingConnections.remove(player.getAddress()); // Will be removed in next START packet check or manually here
+        // Actually, since we re-inject, the START packet comes back. 
+        // The START packet handler will see 'processingPlayers' and remove the pendingConnection then.
         try {
             plugin.debug("Re-injecting LoginStart for cracked user " + username);
             ProtocolLibrary.getProtocolManager().receiveClientPacket(player, packet);
@@ -235,60 +225,46 @@ public class LoginProtocolListener extends PacketAdapter {
                 connection.setRequestMethod("GET");
                 connection.setConnectTimeout(5000);
                 connection.setReadTimeout(5000);
-                return connection.getResponseCode() == 200;
+                
+                int responseCode = connection.getResponseCode();
+                return responseCode == 200;
             } catch (Exception e) {
-                return false;
+                plugin.getLogger().warning("Failed to check Mojang API for " + username + ": " + e.getMessage());
+                return false; // Fail-safe to cracked
             }
         });
     }
 
-    // UPDATED AUTH METHOD WITH DEBUGGING
+    // FIX: Removed IP parameter
     private java.util.concurrent.CompletableFuture<WrappedGameProfile> authenticateMojang(String username, String serverId) {
         return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             try {
-                URL url = new URL("https://sessionserver.mojang.com/session/minecraft/hasJoined?username="
-                        + URLEncoder.encode(username, StandardCharsets.UTF_8)
+                // FIX: Removed &ip= parameter from URL
+                URL url = new URL("https://sessionserver.mojang.com/session/minecraft/hasJoined?username=" 
+                        + URLEncoder.encode(username, StandardCharsets.UTF_8) 
                         + "&serverId=" + URLEncoder.encode(serverId, StandardCharsets.UTF_8));
-
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("GET");
-                connection.setConnectTimeout(10000);
-                connection.setReadTimeout(10000);
-
-                int responseCode = connection.getResponseCode();
-                plugin.debug("Mojang Session Response: " + responseCode + " for " + username);
-
-                if (responseCode == 200) {
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-                    JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
-
-                    String id = json.get("id").getAsString();
-                    String name = json.get("name").getAsString();
-                    UUID uuid = UUID.fromString(id.replaceFirst(
-                            "(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})", "$1-$2-$3-$4-$5"));
-
-                    WrappedGameProfile profile = new WrappedGameProfile(uuid, name);
-
-                    if (json.has("properties")) {
-                        json.getAsJsonArray("properties").forEach(element -> {
-                            JsonObject prop = element.getAsJsonObject();
-                            String pName = prop.get("name").getAsString();
-                            String pValue = prop.get("value").getAsString();
-                            String pSignature = prop.has("signature") ? prop.get("signature").getAsString() : null;
-                            profile.getProperties().put(pName, new WrappedSignedProperty(pName, pValue, pSignature));
-                        });
-                    }
-                    return profile;
-                } else if (responseCode == 204) {
-                    plugin.debug("Mojang returned 204 No Content. Verify Key/Hash generation or Client Auth status.");
-                    return null;
-                } else {
-                    plugin.debug("Mojang Error: " + responseCode);
-                    return null;
+                
+                BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream()));
+                JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
+                
+                String id = json.get("id").getAsString();
+                String name = json.get("name").getAsString();
+                UUID uuid = UUID.fromString(id.replaceFirst(
+                        "(\\w{8})(\\w{4})(\\w{4})(\\w{4})(\\w{12})", "$1-$2-$3-$4-$5"));
+                
+                WrappedGameProfile profile = new WrappedGameProfile(uuid, name);
+                
+                if (json.has("properties")) {
+                    json.getAsJsonArray("properties").forEach(element -> {
+                        JsonObject prop = element.getAsJsonObject();
+                        String pName = prop.get("name").getAsString();
+                        String pValue = prop.get("value").getAsString();
+                        String pSignature = prop.has("signature") ? prop.get("signature").getAsString() : null;
+                        profile.getProperties().put(pName, new WrappedSignedProperty(pName, pValue, pSignature));
+                    });
                 }
+                return profile;
             } catch (Exception e) {
-                plugin.getLogger().severe("Mojang Auth Exception: " + e.getMessage());
-                e.printStackTrace();
                 return null;
             }
         });
