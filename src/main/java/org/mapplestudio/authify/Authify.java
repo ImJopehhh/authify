@@ -31,11 +31,13 @@ public final class Authify extends JavaPlugin {
         this.protocolManager = ProtocolLibrary.getProtocolManager();
 
         // Register Listeners
+        // 1. Login Protocol Listener (Ini Packet Listener, jadi pakai ProtocolManager)
         LoginProtocolListener loginListener = new LoginProtocolListener(this, databaseManager, authManager);
         protocolManager.addPacketListener(loginListener);
 
+        // 2. Security Listener (Ini SEKARANG cuma Bukkit Listener biasa, JANGAN pakai protocolManager)
         PlayerSecurityListener securityListener = new PlayerSecurityListener(this, authManager);
-        protocolManager.addPacketListener(securityListener);
+        // HAPUS BARIS INI: protocolManager.addPacketListener(securityListener);
         Bukkit.getPluginManager().registerEvents(securityListener, this);
 
         // Register Commands
