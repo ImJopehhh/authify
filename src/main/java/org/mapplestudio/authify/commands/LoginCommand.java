@@ -60,7 +60,11 @@ public class LoginCommand implements CommandExecutor {
                 session.setLoggedIn(true);
                 session.setPremium(false);
                 
-                player.sendMessage(getMessage("login-success"));
+                // FIX: Force teleport to refresh chunks and remove void effect
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.teleport(player.getLocation());
+                    player.sendMessage(getMessage("login-success"));
+                });
             } else {
                 player.sendMessage(getMessage("login-failed"));
             }

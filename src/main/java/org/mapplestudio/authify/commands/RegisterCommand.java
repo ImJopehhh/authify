@@ -68,7 +68,11 @@ public class RegisterCommand implements CommandExecutor {
                 session.setLoggedIn(true);
                 session.setPremium(false); // Registered users are treated as cracked/offline
                 
-                player.sendMessage(getMessage("register-success"));
+                // FIX: Force teleport to refresh chunks and remove void effect
+                plugin.getServer().getScheduler().runTask(plugin, () -> {
+                    player.teleport(player.getLocation());
+                    player.sendMessage(getMessage("register-success"));
+                });
             });
         });
 

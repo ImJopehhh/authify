@@ -9,22 +9,24 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
-import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.mapplestudio.authify.Authify;
 import org.mapplestudio.authify.managers.AuthManager;
 
 public class PlayerSecurityListener extends PacketAdapter implements Listener {
+    private final Authify plugin;
     private final AuthManager authManager;
 
     public PlayerSecurityListener(Authify plugin, AuthManager authManager) {
         // Intercept OUTGOING world packets
         super(plugin, PacketType.Play.Server.MAP_CHUNK, PacketType.Play.Server.LIGHT_UPDATE);
+        this.plugin = plugin;
         this.authManager = authManager;
     }
 
@@ -34,6 +36,20 @@ public class PlayerSecurityListener extends PacketAdapter implements Listener {
         // If not authenticated, DO NOT send chunks. World will be empty/void for them.
         if (!authManager.isAuthenticated(player.getUniqueId())) {
             event.setCancelled(true);
+        }
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        if (!authManager.isAuthenticated(player.getUniqueId())) {
+            // FIX: Teleport to spawn to prevent floating in void/falling
+            // We use a slight delay to ensure the player is fully initialized
+            plugin.getServer().getScheduler().runTaskLater(plugin, () -> {
+                if (player.isOnline() && !authManager.isAuthenticated(player.getUniqueId())) {
+                    player.teleport(player.getWorld().getSpawnLocation());
+                }
+            }, 1L);
         }
     }
 

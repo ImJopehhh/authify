@@ -1,6 +1,9 @@
 # Authify Configuration
 # Hybrid Authentication Plugin (Premium + Cracked)
 
+# Enable debug mode to see detailed logs in the console
+debug: false
+
 database:
   # Options: sqlite, mysql
   type: "sqlite"

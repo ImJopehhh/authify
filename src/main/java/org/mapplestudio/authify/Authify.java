@@ -16,11 +16,14 @@ public final class Authify extends JavaPlugin {
     private DatabaseManager databaseManager;
     private AuthManager authManager;
     private ProtocolManager protocolManager;
+    private boolean debugMode;
 
     @Override
     public void onEnable() {
         // Load Configuration
         saveDefaultConfig();
+        reloadConfig(); // Ensure we have the latest values
+        this.debugMode = getConfig().getBoolean("debug", false);
 
         // Initialize Managers
         this.databaseManager = new DatabaseManager(this);
@@ -40,6 +43,9 @@ public final class Authify extends JavaPlugin {
         getCommand("login").setExecutor(new LoginCommand(this, databaseManager, authManager));
 
         getLogger().info("Authify has been enabled!");
+        if (debugMode) {
+            getLogger().info("Debug mode is ENABLED.");
+        }
     }
 
     @Override
@@ -48,5 +54,15 @@ public final class Authify extends JavaPlugin {
             databaseManager.close();
         }
         getLogger().info("Authify has been disabled!");
+    }
+
+    public boolean isDebug() {
+        return debugMode;
+    }
+
+    public void debug(String message) {
+        if (debugMode) {
+            getLogger().info("[DEBUG] " + message);
+        }
     }
 }

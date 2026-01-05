@@ -48,11 +48,16 @@ public class LoginProtocolListener extends PacketAdapter {
     public void onPacketReceiving(PacketEvent event) {
         if (event.getPacketType() == PacketType.Login.Client.START) {
             PacketContainer packet = event.getPacket();
-            WrappedGameProfile profile = packet.getGameProfiles().read(0);
-            String username = profile.getName();
+            
+            // FIX: In 1.20.2+, LoginStart uses Strings and UUIDs directly, not GameProfile
+            String username = packet.getStrings().read(0);
+            UUID uuid = packet.getUUIDs().read(0);
+            
+            plugin.debug("Received LoginStart for: " + username + " (" + uuid + ")");
 
             // Anti-Loop: If we already marked this player as processed, let the packet pass
             if (processingPlayers.contains(username)) {
+                plugin.debug("Player " + username + " is already processed. Allowing packet.");
                 processingPlayers.remove(username);
                 return; 
             }
@@ -60,9 +65,11 @@ public class LoginProtocolListener extends PacketAdapter {
             // 1. HOLD the packet (Stop server from assigning Offline UUID)
             event.setCancelled(true);
             pendingLoginPackets.put(username, packet);
+            plugin.debug("Held LoginStart packet for " + username);
 
             // 2. Async Lookup
             databaseManager.isPremium(username).thenAccept(isPremium -> {
+                plugin.debug("Database lookup for " + username + ": Premium=" + isPremium);
                 if (isPremium) {
                     // 3a. Premium: Initiate Encryption Flow
                     try {
@@ -78,6 +85,7 @@ public class LoginProtocolListener extends PacketAdapter {
                         encryptionRequest.getByteArrays().write(1, verifyToken);
 
                         ProtocolLibrary.getProtocolManager().sendServerPacket(event.getPlayer(), encryptionRequest);
+                        plugin.debug("Sent Encryption Request to " + username);
                     } catch (Exception e) {
                         plugin.getLogger().severe("Encryption init failed for " + username);
                         event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
@@ -88,6 +96,7 @@ public class LoginProtocolListener extends PacketAdapter {
                     processingPlayers.add(username);
                     pendingLoginPackets.remove(username);
                     try {
+                        plugin.debug("Re-injecting LoginStart for cracked user " + username);
                         ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), packet);
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -104,12 +113,15 @@ public class LoginProtocolListener extends PacketAdapter {
             byte[] clientVerifyToken = packet.getByteArrays().read(1);
             String username = event.getPlayer().getName();
             
+            plugin.debug("Received Encryption Response from " + username);
+            
             try {
                 KeyPair keyPair = EncryptionUtil.getKeyPair();
                 SecretKey secretKey = EncryptionUtil.decryptSharedKey(keyPair.getPrivate(), sharedSecret);
                 
                 if (!java.util.Arrays.equals(verifyTokens.get(username), 
                         EncryptionUtil.decryptData(keyPair.getPrivate(), clientVerifyToken))) {
+                    plugin.debug("Verify token mismatch for " + username);
                     event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     return;
                 }
@@ -118,13 +130,16 @@ public class LoginProtocolListener extends PacketAdapter {
                 String ip = event.getPlayer().getAddress().getAddress().getHostAddress();
                 
                 // 5. Authenticate with Mojang
+                plugin.debug("Authenticating " + username + " with Mojang...");
                 authenticateMojang(username, serverId, ip).thenAccept(profile -> {
                     if (profile != null) {
+                        plugin.debug("Mojang Auth Success for " + username + ". UUID: " + profile.getUUID());
                         // 6. Success: Re-inject Login Start with REAL UUID
                         PacketContainer originalLoginPacket = pendingLoginPackets.remove(username);
                         if (originalLoginPacket != null) {
                             // Update the profile in the original packet
-                            originalLoginPacket.getGameProfiles().write(0, profile);
+                            // In 1.20.2+, we update the UUID field directly
+                            originalLoginPacket.getUUIDs().write(0, profile.getUUID());
                             
                             // Mark as processed so we don't intercept it again
                             processingPlayers.add(username);
@@ -135,6 +150,7 @@ public class LoginProtocolListener extends PacketAdapter {
                                 // For this scope, we assume the server is in offline mode so it won't enforce encryption,
                                 // but we have validated the user is premium.
                                 
+                                plugin.debug("Re-injecting LoginStart for premium user " + username + " with UUID " + profile.getUUID());
                                 ProtocolLibrary.getProtocolManager().receiveClientPacket(event.getPlayer(), originalLoginPacket);
                                 
                                 AuthSession session = authManager.createSession(profile.getUUID());
@@ -147,11 +163,13 @@ public class LoginProtocolListener extends PacketAdapter {
                              event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-session-expired", "Session Expired"));
                         }
                     } else {
+                        plugin.debug("Mojang Auth Failed for " + username);
                         event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     }
                 });
                 
             } catch (Exception e) {
+                plugin.getLogger().severe("Encryption Error: " + e.getMessage());
                 event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-encryption-error", "Encryption Error"));
             }
         }
