@@ -6,33 +6,43 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.mapplestudio.authify.Authify;
 import org.mapplestudio.authify.database.DatabaseManager;
 import org.mapplestudio.authify.managers.AuthManager;
 import org.mapplestudio.authify.managers.AuthSession;
 
 public class LoginCommand implements CommandExecutor {
+    private final Authify plugin;
     private final DatabaseManager databaseManager;
     private final AuthManager authManager;
 
-    public LoginCommand(DatabaseManager databaseManager, AuthManager authManager) {
+    public LoginCommand(Authify plugin, DatabaseManager databaseManager, AuthManager authManager) {
+        this.plugin = plugin;
         this.databaseManager = databaseManager;
         this.authManager = authManager;
+    }
+
+    private String getMessage(String path) {
+        String msg = plugin.getConfig().getString("messages." + path);
+        if (msg == null) return "";
+        String prefix = plugin.getConfig().getString("messages.prefix", "");
+        return ChatColor.translateAlternateColorCodes('&', prefix + msg);
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
+            sender.sendMessage(getMessage("only-players"));
             return true;
         }
 
         if (authManager.isAuthenticated(player.getUniqueId())) {
-            player.sendMessage(ChatColor.RED + "You are already logged in.");
+            player.sendMessage(getMessage("already-logged-in"));
             return true;
         }
 
         if (args.length != 1) {
-            player.sendMessage(ChatColor.RED + "Usage: /login <password>");
+            player.sendMessage(getMessage("usage-login"));
             return true;
         }
 
@@ -40,7 +50,7 @@ public class LoginCommand implements CommandExecutor {
 
         databaseManager.getPasswordHash(player.getName()).thenAccept(hashedPassword -> {
             if (hashedPassword == null) {
-                player.sendMessage(ChatColor.RED + "You are not registered. Use /register <password> <confirm>.");
+                player.sendMessage(getMessage("not-registered"));
                 return;
             }
 
@@ -50,9 +60,9 @@ public class LoginCommand implements CommandExecutor {
                 session.setLoggedIn(true);
                 session.setPremium(false);
                 
-                player.sendMessage(ChatColor.GREEN + "Successfully logged in!");
+                player.sendMessage(getMessage("login-success"));
             } else {
-                player.sendMessage(ChatColor.RED + "Incorrect password.");
+                player.sendMessage(getMessage("login-failed"));
             }
         });
 

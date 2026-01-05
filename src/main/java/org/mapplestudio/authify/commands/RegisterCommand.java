@@ -6,33 +6,43 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.mapplestudio.authify.Authify;
 import org.mapplestudio.authify.database.DatabaseManager;
 import org.mapplestudio.authify.managers.AuthManager;
 import org.mapplestudio.authify.managers.AuthSession;
 
 public class RegisterCommand implements CommandExecutor {
+    private final Authify plugin;
     private final DatabaseManager databaseManager;
     private final AuthManager authManager;
 
-    public RegisterCommand(DatabaseManager databaseManager, AuthManager authManager) {
+    public RegisterCommand(Authify plugin, DatabaseManager databaseManager, AuthManager authManager) {
+        this.plugin = plugin;
         this.databaseManager = databaseManager;
         this.authManager = authManager;
+    }
+
+    private String getMessage(String path) {
+        String msg = plugin.getConfig().getString("messages." + path);
+        if (msg == null) return "";
+        String prefix = plugin.getConfig().getString("messages.prefix", "");
+        return ChatColor.translateAlternateColorCodes('&', prefix + msg);
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(ChatColor.RED + "Only players can use this command.");
+            sender.sendMessage(getMessage("only-players"));
             return true;
         }
 
         if (authManager.isAuthenticated(player.getUniqueId())) {
-            player.sendMessage(ChatColor.RED + "You are already logged in.");
+            player.sendMessage(getMessage("already-logged-in"));
             return true;
         }
 
         if (args.length != 2) {
-            player.sendMessage(ChatColor.RED + "Usage: /register <password> <confirm>");
+            player.sendMessage(getMessage("usage-register"));
             return true;
         }
 
@@ -40,13 +50,13 @@ public class RegisterCommand implements CommandExecutor {
         String confirm = args[1];
 
         if (!password.equals(confirm)) {
-            player.sendMessage(ChatColor.RED + "Passwords do not match.");
+            player.sendMessage(getMessage("password-mismatch"));
             return true;
         }
 
         databaseManager.getPasswordHash(player.getName()).thenAccept(existingHash -> {
             if (existingHash != null) {
-                player.sendMessage(ChatColor.RED + "You are already registered. Use /login <password>.");
+                player.sendMessage(getMessage("already-registered"));
                 return;
             }
 
@@ -58,8 +68,7 @@ public class RegisterCommand implements CommandExecutor {
                 session.setLoggedIn(true);
                 session.setPremium(false); // Registered users are treated as cracked/offline
                 
-                player.sendMessage(ChatColor.GREEN + "Successfully registered and logged in!");
-                // Here you would typically remove blindness/restrictions, but the listener handles it by checking isAuthenticated
+                player.sendMessage(getMessage("register-success"));
             });
         });
 

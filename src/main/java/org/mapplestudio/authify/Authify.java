@@ -19,6 +19,9 @@ public final class Authify extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        // Load Configuration
+        saveDefaultConfig();
+
         // Initialize Managers
         this.databaseManager = new DatabaseManager(this);
         this.authManager = new AuthManager();
@@ -33,8 +36,8 @@ public final class Authify extends JavaPlugin {
         Bukkit.getPluginManager().registerEvents(securityListener, this);
 
         // Register Commands
-        getCommand("register").setExecutor(new RegisterCommand(databaseManager, authManager));
-        getCommand("login").setExecutor(new LoginCommand(databaseManager, authManager));
+        getCommand("register").setExecutor(new RegisterCommand(this, databaseManager, authManager));
+        getCommand("login").setExecutor(new LoginCommand(this, databaseManager, authManager));
 
         getLogger().info("Authify has been enabled!");
     }

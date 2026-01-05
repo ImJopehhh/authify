@@ -1,0 +1,39 @@
+# Authify Configuration
+# Hybrid Authentication Plugin (Premium + Cracked)
+
+database:
+  # Options: sqlite, mysql
+  type: "sqlite"
+  
+  sqlite:
+    file-name: "database.db"
+    
+  mysql:
+    host: "localhost"
+    port: 3306
+    database: "authify"
+    username: "root"
+    password: "password"
+    pool-size: 10
+
+messages:
+  prefix: "&8[&bAuthify&8] &7"
+  no-permission: "&cYou do not have permission to execute this command."
+  only-players: "&cOnly players can use this command."
+  
+  already-logged-in: "&cYou are already logged in!"
+  not-registered: "&cYou are not registered! Use /register <password> <confirm>."
+  already-registered: "&cYou are already registered! Use /login <password>."
+  
+  login-success: "&aSuccessfully logged in! Welcome back."
+  login-failed: "&cIncorrect password!"
+  register-success: "&aSuccessfully registered and logged in!"
+  
+  password-mismatch: "&cPasswords do not match!"
+  usage-login: "&cUsage: /login <password>"
+  usage-register: "&cUsage: /register <password> <confirm>"
+  
+  kick-auth-failed: "&cAuthentication Failed. Please try again."
+  kick-timeout: "&cLogin timed out."
+  kick-encryption-error: "&cEncryption Error. Please rejoin."
+  kick-session-expired: "&cSession Expired. Please rejoin."

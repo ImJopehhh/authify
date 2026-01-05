@@ -14,30 +14,39 @@ import java.util.concurrent.CompletableFuture;
 public class DatabaseManager {
     private final Authify plugin;
     private HikariDataSource dataSource;
-    private final boolean isMySQL;
 
     public DatabaseManager(Authify plugin) {
         this.plugin = plugin;
-        // In a real scenario, read from config. Assuming SQLite for default/simplicity if config not present
-        this.isMySQL = false; 
         connect();
         createTables();
     }
 
     private void connect() {
+        String type = plugin.getConfig().getString("database.type", "sqlite");
         HikariConfig config = new HikariConfig();
-        if (isMySQL) {
-            config.setJdbcUrl("jdbc:mysql://localhost:3306/authify");
-            config.setUsername("root");
-            config.setPassword("password");
+
+        if (type.equalsIgnoreCase("mysql")) {
+            String host = plugin.getConfig().getString("database.mysql.host", "localhost");
+            int port = plugin.getConfig().getInt("database.mysql.port", 3306);
+            String database = plugin.getConfig().getString("database.mysql.database", "authify");
+            String username = plugin.getConfig().getString("database.mysql.username", "root");
+            String password = plugin.getConfig().getString("database.mysql.password", "password");
+            int poolSize = plugin.getConfig().getInt("database.mysql.pool-size", 10);
+
+            config.setJdbcUrl("jdbc:mysql://" + host + ":" + port + "/" + database);
+            config.setUsername(username);
+            config.setPassword(password);
+            config.setMaximumPoolSize(poolSize);
             config.addDataSourceProperty("cachePrepStmts", "true");
             config.addDataSourceProperty("prepStmtCacheSize", "250");
             config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
         } else {
-            config.setJdbcUrl("jdbc:sqlite:" + plugin.getDataFolder() + "/database.db");
+            String fileName = plugin.getConfig().getString("database.sqlite.file-name", "database.db");
+            config.setJdbcUrl("jdbc:sqlite:" + plugin.getDataFolder() + "/" + fileName);
             config.setDriverClassName("org.sqlite.JDBC");
+            config.setMaximumPoolSize(10);
         }
-        config.setMaximumPoolSize(10);
+
         dataSource = new HikariDataSource(config);
     }
 

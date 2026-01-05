@@ -2,6 +2,7 @@ package org.mapplestudio.authify.listeners;
 
 import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolLibrary;
+import com.comphenix.protocol.events.ListenerPriority;
 import com.comphenix.protocol.events.PacketAdapter;
 import com.comphenix.protocol.events.PacketContainer;
 import com.comphenix.protocol.events.PacketEvent;
@@ -37,7 +38,7 @@ public class LoginProtocolListener extends PacketAdapter {
     private final Map<String, PacketContainer> pendingLoginPackets = new ConcurrentHashMap<>();
 
     public LoginProtocolListener(Authify plugin, DatabaseManager databaseManager, AuthManager authManager) {
-        super(plugin, PacketType.Login.Client.START, PacketType.Login.Client.ENCRYPTION_BEGIN);
+        super(plugin, ListenerPriority.HIGHEST, PacketType.Login.Client.START, PacketType.Login.Client.ENCRYPTION_BEGIN);
         this.plugin = plugin;
         this.databaseManager = databaseManager;
         this.authManager = authManager;
@@ -78,7 +79,7 @@ public class LoginProtocolListener extends PacketAdapter {
                         ProtocolLibrary.getProtocolManager().sendServerPacket(event.getPlayer(), encryptionRequest);
                     } catch (Exception e) {
                         plugin.getLogger().severe("Encryption init failed for " + username);
-                        event.getPlayer().kickPlayer("Login Error");
+                        event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                         pendingLoginPackets.remove(username);
                     }
                 } else {
@@ -108,7 +109,7 @@ public class LoginProtocolListener extends PacketAdapter {
                 
                 if (!java.util.Arrays.equals(verifyTokens.get(username), 
                         EncryptionUtil.decryptData(keyPair.getPrivate(), clientVerifyToken))) {
-                    event.getPlayer().kickPlayer("Invalid Token");
+                    event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     return;
                 }
 
@@ -142,15 +143,15 @@ public class LoginProtocolListener extends PacketAdapter {
                                 e.printStackTrace();
                             }
                         } else {
-                             event.getPlayer().kickPlayer("Session Expired");
+                             event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-session-expired", "Session Expired"));
                         }
                     } else {
-                        event.getPlayer().kickPlayer("Authentication Failed");
+                        event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     }
                 });
                 
             } catch (Exception e) {
-                event.getPlayer().kickPlayer("Encryption Error");
+                event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-encryption-error", "Encryption Error"));
             }
         }
     }

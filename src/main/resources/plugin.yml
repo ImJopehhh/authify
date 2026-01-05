@@ -4,3 +4,12 @@ main: org.mapplestudio.authify.Authify
 api-version: '1.21'
 load: STARTUP
 authors: [ ImJopeh ]
+commands:
+  login:
+    description: Log in to the server
+    usage: /login <password>
+    aliases: [l]
+  register:
+    description: Register an account
+    usage: /register <password> <confirm>
+    aliases: [reg]
