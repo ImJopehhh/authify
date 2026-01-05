@@ -20,6 +20,7 @@ import javax.crypto.SecretKey;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -37,6 +38,8 @@ public class LoginProtocolListener extends PacketAdapter {
     private final Set<String> processingPlayers = ConcurrentHashMap.newKeySet();
     // Store original login packet to re-inject later
     private final Map<String, PacketContainer> pendingLoginPackets = new ConcurrentHashMap<>();
+    // Track connection identity by IP/Port since Player name is not yet available
+    private final Map<InetSocketAddress, String> pendingConnections = new ConcurrentHashMap<>();
 
     public LoginProtocolListener(Authify plugin, DatabaseManager databaseManager, AuthManager authManager) {
         super(plugin, ListenerPriority.HIGHEST, PacketType.Login.Client.START, PacketType.Login.Client.ENCRYPTION_BEGIN);
@@ -53,19 +56,22 @@ public class LoginProtocolListener extends PacketAdapter {
             // FIX: In 1.20.2+, LoginStart uses Strings and UUIDs directly
             String username = packet.getStrings().read(0);
             UUID uuid = packet.getUUIDs().read(0);
+            InetSocketAddress address = event.getPlayer().getAddress();
             
-            plugin.debug("Received LoginStart for: " + username + " (" + uuid + ")");
+            plugin.debug("Received LoginStart for: " + username + " (" + uuid + ") from " + address);
 
             // Anti-Loop: If we already marked this player as processed, let the packet pass
             if (processingPlayers.contains(username)) {
                 plugin.debug("Player " + username + " is already processed. Allowing packet.");
                 processingPlayers.remove(username);
+                pendingConnections.remove(address); // Cleanup
                 return; 
             }
 
             // 1. HOLD the packet (Stop server from assigning Offline UUID)
             event.setCancelled(true);
             pendingLoginPackets.put(username, packet);
+            pendingConnections.put(address, username); // Map IP to Username
             plugin.debug("Held LoginStart packet for " + username);
 
             // 2. Async Lookup
@@ -93,10 +99,18 @@ public class LoginProtocolListener extends PacketAdapter {
             // 4. Handle Encryption Response (Premium Only)
             event.setCancelled(true); // We handle this manually
             
+            InetSocketAddress address = event.getPlayer().getAddress();
+            String username = pendingConnections.get(address);
+
+            if (username == null) {
+                plugin.debug("Received Encryption Response from unknown connection: " + address);
+                event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
+                return;
+            }
+
             PacketContainer packet = event.getPacket();
             byte[] sharedSecret = packet.getByteArrays().read(0);
             byte[] clientVerifyToken = packet.getByteArrays().read(1);
-            String username = event.getPlayer().getName();
             
             plugin.debug("Received Encryption Response from " + username);
             
@@ -108,11 +122,12 @@ public class LoginProtocolListener extends PacketAdapter {
                         EncryptionUtil.decryptData(keyPair.getPrivate(), clientVerifyToken))) {
                     plugin.debug("Verify token mismatch for " + username);
                     event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
+                    cleanup(username, address);
                     return;
                 }
 
                 String serverId = EncryptionUtil.generateServerId("", keyPair.getPublic(), secretKey);
-                String ip = event.getPlayer().getAddress().getAddress().getHostAddress();
+                String ip = address.getAddress().getHostAddress();
                 
                 // 5. Authenticate with Mojang
                 plugin.debug("Authenticating " + username + " with Mojang...");
@@ -145,12 +160,24 @@ public class LoginProtocolListener extends PacketAdapter {
                         plugin.debug("Mojang Auth Failed for " + username);
                         event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
                     }
+                    cleanup(username, address);
                 });
                 
             } catch (Exception e) {
                 plugin.getLogger().severe("Encryption Error: " + e.getMessage());
                 event.getPlayer().kickPlayer(plugin.getConfig().getString("messages.kick-encryption-error", "Encryption Error"));
+                cleanup(username, address);
             }
+        }
+    }
+
+    private void cleanup(String username, InetSocketAddress address) {
+        if (username != null) {
+            verifyTokens.remove(username);
+            // pendingLoginPackets.remove(username); // Handled in logic
+        }
+        if (address != null) {
+            pendingConnections.remove(address);
         }
     }
 
@@ -172,12 +199,16 @@ public class LoginProtocolListener extends PacketAdapter {
             plugin.getLogger().severe("Encryption init failed for " + username);
             player.kickPlayer(plugin.getConfig().getString("messages.kick-auth-failed", "Authentication Failed"));
             pendingLoginPackets.remove(username);
+            pendingConnections.remove(player.getAddress());
         }
     }
 
     private void releasePacket(org.bukkit.entity.Player player, String username, PacketContainer packet) {
         processingPlayers.add(username);
         pendingLoginPackets.remove(username);
+        // pendingConnections.remove(player.getAddress()); // Will be removed in next START packet check or manually here
+        // Actually, since we re-inject, the START packet comes back. 
+        // The START packet handler will see 'processingPlayers' and remove the pendingConnection then.
         try {
             plugin.debug("Re-injecting LoginStart for cracked user " + username);
             ProtocolLibrary.getProtocolManager().receiveClientPacket(player, packet);
