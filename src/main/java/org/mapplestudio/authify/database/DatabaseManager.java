@@ -14,6 +14,7 @@ import java.util.concurrent.CompletableFuture;
 public class DatabaseManager {
     private final Authify plugin;
     private HikariDataSource dataSource;
+    private boolean isMySQL;
 
     public DatabaseManager(Authify plugin) {
         this.plugin = plugin;
@@ -26,6 +27,7 @@ public class DatabaseManager {
         HikariConfig config = new HikariConfig();
 
         if (type.equalsIgnoreCase("mysql")) {
+            this.isMySQL = true;
             String host = plugin.getConfig().getString("database.mysql.host", "localhost");
             int port = plugin.getConfig().getInt("database.mysql.port", 3306);
             String database = plugin.getConfig().getString("database.mysql.database", "authify");
@@ -41,12 +43,13 @@ public class DatabaseManager {
             config.addDataSourceProperty("prepStmtCacheSize", "250");
             config.addDataSourceProperty("prepStmtCacheSqlLimit", "2048");
         } else {
+            this.isMySQL = false;
             String fileName = plugin.getConfig().getString("database.sqlite.file-name", "database.db");
             config.setJdbcUrl("jdbc:sqlite:" + plugin.getDataFolder() + "/" + fileName);
             config.setDriverClassName("org.sqlite.JDBC");
             config.setMaximumPoolSize(10);
         }
-
+        
         dataSource = new HikariDataSource(config);
     }
 
@@ -85,10 +88,17 @@ public class DatabaseManager {
 
     public CompletableFuture<Void> registerUser(UUID uuid, String username, String hashedPassword, String ip) {
         return CompletableFuture.runAsync(() -> {
+            String sql;
+            if (isMySQL) {
+                sql = "INSERT INTO authify_users (uuid, username, password, premium, ip) VALUES (?, ?, ?, ?, ?) " +
+                      "ON DUPLICATE KEY UPDATE password = ?, ip = ?";
+            } else {
+                sql = "INSERT INTO authify_users (uuid, username, password, premium, ip) VALUES (?, ?, ?, ?, ?) " +
+                      "ON CONFLICT(uuid) DO UPDATE SET password = ?, ip = ?";
+            }
+
             try (Connection conn = dataSource.getConnection();
-                 PreparedStatement ps = conn.prepareStatement(
-                         "INSERT INTO authify_users (uuid, username, password, premium, ip) VALUES (?, ?, ?, ?, ?) " +
-                         "ON CONFLICT(uuid) DO UPDATE SET password = ?, ip = ?")) {
+                 PreparedStatement ps = conn.prepareStatement(sql)) {
                 ps.setString(1, uuid.toString());
                 ps.setString(2, username);
                 ps.setString(3, hashedPassword);

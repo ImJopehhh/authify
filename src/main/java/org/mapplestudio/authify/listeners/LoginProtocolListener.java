@@ -73,8 +73,9 @@ public class LoginProtocolListener extends PacketAdapter {
                         PacketContainer encryptionRequest = ProtocolLibrary.getProtocolManager()
                                 .createPacket(PacketType.Login.Server.ENCRYPTION_BEGIN);
                         encryptionRequest.getStrings().write(0, ""); // Server ID
-                        encryptionRequest.getPublicKeys().write(0, keyPair.getPublic());
-                        encryptionRequest.getByteArrays().write(0, verifyToken);
+                        // FIX: Use getByteArrays() for Public Key in 1.21+
+                        encryptionRequest.getByteArrays().write(0, keyPair.getPublic().getEncoded());
+                        encryptionRequest.getByteArrays().write(1, verifyToken);
 
                         ProtocolLibrary.getProtocolManager().sendServerPacket(event.getPlayer(), encryptionRequest);
                     } catch (Exception e) {
