@@ -240,8 +240,8 @@ public class LoginProtocolListener extends PacketAdapter {
             try {
                 URL url = new URL("https://sessionserver.mojang.com/session/minecraft/hasJoined?username=" 
                         + URLEncoder.encode(username, StandardCharsets.UTF_8) 
-                        + "&serverId=" + URLEncoder.encode(serverId, StandardCharsets.UTF_8)
-                        + "&ip=" + URLEncoder.encode(ip, StandardCharsets.UTF_8));
+                        + "&serverId=" + URLEncoder.encode(serverId, StandardCharsets.UTF_8));
+//                        + "&ip=" + URLEncoder.encode(ip, StandardCharsets.UTF_8));
                 
                 BufferedReader reader = new BufferedReader(new InputStreamReader(url.openStream()));
                 JsonObject json = JsonParser.parseReader(reader).getAsJsonObject();
